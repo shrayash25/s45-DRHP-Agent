@@ -1,6 +1,6 @@
 Note: This prompt was developed with some help from Gemini 1.5 Pro and run through Claude. Because this is a proof-of-concept, I decided to keep things simple and build the UI with Streamlit in two modular Python files. If we were taking this to production, I would upgrade the architecture to a React/Next.js frontend and a dedicated Python backend (like FastAPI or Django) to handle the scale.
 
-
+**Prompt 1**
 **System Context:**
 I need to build a "DRHP Capital Structure Drafting Agent" in Python. The system takes 4 OCR-extracted MCA Form SH-7 documents (as markdown files) and generates an Authorised Share Capital change table. 
 
@@ -37,3 +37,30 @@ Please split the code into two files: `ai_agent.py` (backend logic) and `app.py`
 3. On button click, process all files through the `ai_agent.py` pipeline and display the Pandas DataFrame using `st.dataframe` spanning the full width.
 4. Include an `st.download_button` to download the table as a CSV.
 5. Below the table, build an "Audit Trail & Traceability" section using `st.expander` to display the raw JSON dictionary extracted from each source file so the user can verify the LLM's work.
+
+
+**Prompt 2: Upgrading to a Two-Pass Architecture for Mixed Document Batches**
+
+**System Context:**
+We need to upgrade the existing "DRHP Capital Structure Drafting Agent" to handle a mixed batch of uploads. Instead of assuming every file is an SH-7, the system might receive Board Resolutions, EGM Notices, or Drafts alongside the official SH-7 filings.
+
+**Strict Constraints:**
+1. **Context Window Protection:** For the classification pass, only send the first 2000 words of the document to the LLM to prevent context-overflow in local models.
+2. **Chain-of-Thought (CoT) Routing:** Small models often suffer from "False Positives" (e.g., classifying an EGM Notice as an SH-7). To fix this, force the LLM to write out its reasoning *before* it outputs the classification boolean.
+3. **Bulletproof JSON Parsing:** Local models often wrap JSON in markdown (e.g., ` ```json `). You must implement a Regex helper function to strip all conversational filler and strictly parse the dictionary.
+
+**Upgrades for `ai_agent.py`:**
+1. **Add `clean_and_parse_json(raw_text)`:** Use the `re` module to extract text strictly between `{` and `}` to prevent `JSONDecodeError`s. Apply this to all LLM responses.
+2. **Add `extract_document_metadata` (Pass 1):** Create a new LLM function that reads the document snippet. Ask for the following JSON keys strictly in this order:
+   - `reasoning`: A 1-2 sentence explanation of what the document actually is based on context.
+   - `actual_document_type`: String (e.g., "EGM Notice", "Form SH-7", "Board Resolution").
+   - `is_sh7`: Boolean. True ONLY if it contains "FORM NO. SH-7".
+   - `meeting_date`: YYYY-MM-DD.
+   - `status`: "Official Filing" or "Draft".
+   *(Use `.get()` with safe defaults in Python to prevent KeyErrors if the LLM skips a field).*
+3. **Keep `extract_sh7_data` (Pass 2):** Leave the strict ASC extraction logic unchanged, but make sure it uses the new regex JSON cleaner.
+
+**Upgrades for `app.py`:**
+1. **Smart Routing Loop:** Iterate through all uploaded files individually. Run Pass 1 (`extract_document_metadata`) on every file. If and ONLY if `is_sh7` is exactly `True`, pass that specific file to Pass 2 (`extract_sh7_data`).
+2. **Add a Classification Ledger:** Above the DRHP table, render a new Pandas DataFrame (`st.dataframe`) showing the Pass 1 results for *all* uploaded files. 
+   - Columns should be: "Filename", "Detected Document Type", "AI Reasoning", "Is SH-7?", and "Meeting Date". This provides total transparency into why the AI skipped certain documents.
